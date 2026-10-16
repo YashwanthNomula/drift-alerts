@@ -1,0 +1,151 @@
+"""Core drift statistics: PSI and the two-sample KS statistic. Pure Python, zero dependencies.
+
+Same approach as the driftwatch project: quantile bins learned from the
+reference window, epsilon smoothing so PSI stays finite, and the KS statistic
+as the max CDF gap on the combined sorted grid.
+"""
+
+from __future__ import annotations
+
+import bisect
+import math
+
+#: Standard PSI interpretation thresholds.
+PSI_NO_CHANGE = 0.1
+PSI_MODERATE = 0.25
+
+#: Standard KS interpretation thresholds: < 0.1 small, 0.1-0.3 moderate, > 0.3 large.
+KS_NO_CHANGE = 0.1
+KS_MODERATE = 0.3
+
+#: Smoothing applied to zero-probability bins so PSI stays finite.
+EPSILON = 1e-4
+
+
+def quantile_bin_edges(ref_values: list[float], n_bins: int = 10) -> list[float]:
+    """Bin edges from reference-data quantiles; duplicate edges are dropped.
+
+    A constant feature collapses to a single bin (edges ``[-inf, +inf]``).
+    """
+    vals = sorted(ref_values)
+    if not vals:
+        return [float("-inf"), float("inf")]
+    edges = [float("-inf")]
+    n = len(vals)
+    for i in range(1, n_bins):
+        pos = (n - 1) * (i / n_bins)
+        lo = int(pos)
+        hi = min(lo + 1, n - 1)
+        frac = pos - lo
+        q = vals[lo] * (1.0 - frac) + vals[hi] * frac
+        if q > edges[-1]:
+            edges.append(q)
+    edges.append(float("inf"))
+    return edges
+
+
+def binned_counts(values: list[float], edges: list[float]) -> list[int]:
+    n = len(edges) - 1
+    counts = [0] * n
+    inner = edges[1:-1]  # edges[0] is -inf, edges[-1] is +inf
+    for v in values:
+        counts[bisect.bisect_right(inner, v)] += 1
+    return counts
+
+
+def psi_from_counts(ref_counts: list[int], cur_counts: list[int],
+                    epsilon: float = EPSILON) -> float:
+    """Population Stability Index from per-bin counts (epsilon-smoothed)."""
+    n_ref = sum(ref_counts)
+    n_cur = sum(cur_counts)
+    total = 0.0
+    for r, c in zip(ref_counts, cur_counts):
+        rp = (r / n_ref) if n_ref else 0.0
+        cp = (c / n_cur) if n_cur else 0.0
+        rp = rp if rp > 0 else epsilon
+        cp = cp if cp > 0 else epsilon
+        total += (cp - rp) * math.log(cp / rp)
+    return total
+
+
+def psi_numeric(ref_values: list[float], cur_values: list[float],
+                n_bins: int = 10) -> tuple[float, list[float], list[int], list[int]]:
+    """PSI for a numeric feature; bins are learned from the reference data."""
+    edges = quantile_bin_edges(ref_values, n_bins)
+    ref_counts = binned_counts(ref_values, edges)
+    cur_counts = binned_counts(cur_values, edges)
+    return psi_from_counts(ref_counts, cur_counts), edges, ref_counts, cur_counts
+
+
+def psi_categorical(ref_values: list[str], cur_values: list[str]
+                    ) -> tuple[float, list[str], list[int], list[int]]:
+    """PSI for a categorical feature over the union of observed categories.
+
+    Categories seen only in the current data are kept as their own bin,
+    smoothed, never dropped.
+    """
+    cats: list[str] = []
+    seen: set[str] = set()
+    for v in list(ref_values) + list(cur_values):
+        if v not in seen:
+            seen.add(v)
+            cats.append(v)
+    idx = {c: i for i, c in enumerate(cats)}
+    ref_counts = [0] * len(cats)
+    cur_counts = [0] * len(cats)
+    for v in ref_values:
+        ref_counts[idx[v]] += 1
+    for v in cur_values:
+        cur_counts[idx[v]] += 1
+    return psi_from_counts(ref_counts, cur_counts), cats, ref_counts, cur_counts
+
+
+def ks_2samp(a: list[float], b: list[float]) -> float:
+    """Two-sample Kolmogorov-Smirnov statistic: max |CDF_a - CDF_b|."""
+    if not a or not b:
+        return 0.0
+    sa, sb = sorted(a), sorted(b)
+    na, nb = len(sa), len(sb)
+    i = j = 0
+    best = 0.0
+    for x in sorted(set(sa) | set(sb)):
+        while i < na and sa[i] <= x:
+            i += 1
+        while j < nb and sb[j] <= x:
+            j += 1
+        gap = abs(i / na - j / nb)
+        if gap > best:
+            best = gap
+    return best
+
+
+def psi_verdict(psi_value: float,
+                warning: float = PSI_NO_CHANGE,
+                drift: float = PSI_MODERATE) -> str:
+    if psi_value < warning:
+        return "no significant change"
+    if psi_value <= drift:
+        return "moderate shift — watch"
+    return "significant drift"
+
+
+def ks_verdict(ks_value: float,
+               warning: float = KS_NO_CHANGE,
+               drift: float = KS_MODERATE) -> str:
+    if ks_value < warning:
+        return "no significant change"
+    if ks_value <= drift:
+        return "moderate shift — watch"
+    return "significant drift"
+
+
+_VERDICT_SEVERITY = {
+    "no significant change": 0,
+    "moderate shift — watch": 1,
+    "significant drift": 2,
+}
+
+
+def worst_verdict(*verdicts: str) -> str:
+    """Most severe verdict (e.g. the worse of the PSI and KS opinions)."""
+    return max(verdicts, key=lambda v: _VERDICT_SEVERITY[v])
