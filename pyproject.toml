@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drift-alerts"
+version = "1.0.0"
+description = "Model drift detection on scored predictions with plain-English alert emails drafted by a local open model (Ollama/gemma) or a deterministic heuristic fallback"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [{ name = "YashwanthNomula", email = "YashwanthNomula@users.noreply.github.com" }]
+keywords = ["mlops", "drift-detection", "model-monitoring", "psi", "kolmogorov-smirnov", "ollama", "open-weights"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.scripts]
+drift-alerts = "drift_alerts.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["drift_alerts*"]
